@@ -1,0 +1,19 @@
+{
+    "name": "distributed-simulation-engine",
+    "version": "1.0.0",
+    "scripts": {
+        "test": "jest --coverage",
+        "test:watch": "jest --watch",
+        "lint": "eslint src/**/*.js",
+        "lint:fix": "eslint src/**/*.js --fix"
+    },
+    "jest": {
+        "testEnvironment": "node",
+        "collectCoverageFrom": [
+            "src/**/*.js"
+        ],
+        "testMatch": [
+            "**/__tests__/**/*.test.js"
+        ]
+    }
+}
