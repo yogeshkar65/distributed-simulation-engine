@@ -7,6 +7,7 @@ const { getIO } = require("../../config/socket");
 const startSimulation = async (req, res, next) => {
     try {
         const { projectId } = req.params;
+        const { mode = "deterministic" } = req.body;
 
         // Validate project ownership
         const project = await Project.findById(projectId);
@@ -23,7 +24,7 @@ const startSimulation = async (req, res, next) => {
             return res.status(403).json({ message: "Not authorized to manage this simulation" });
         }
 
-        const simulation = await simulationEngine.startSimulation(projectId);
+        const simulation = await simulationEngine.startSimulation(projectId, mode);
 
         res.json({
             message: "Simulation started",
