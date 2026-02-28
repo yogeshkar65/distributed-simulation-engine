@@ -11,6 +11,11 @@ const simulationHistorySchema = new mongoose.Schema({
         type: Number,
         required: true
     },
+    mode: {
+        type: String,
+        enum: ["deterministic", "chaos"],
+        default: "deterministic"
+    },
     nodesState: {
         type: Object,
         required: true
