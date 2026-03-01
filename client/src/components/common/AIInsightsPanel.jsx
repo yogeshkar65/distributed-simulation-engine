@@ -113,9 +113,15 @@ const AIInsightsPanel = ({
                                     <p style={{ margin: 0, fontSize: '0.94rem', lineHeight: '1.6', color: 'var(--text-secondary)' }}>{analysis.summary}</p>
 
                                     <div style={{ marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                        {analysis.injectionOrigin && (
+                                            <div>
+                                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Injection Origin (Spark)</div>
+                                                <div style={{ fontWeight: '600', color: '#f59e0b' }}>{analysis.injectionOrigin}</div>
+                                            </div>
+                                        )}
                                         <div>
-                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Primary Failure Origin</div>
-                                            <div style={{ fontWeight: '600', color: 'var(--danger)' }}>{analysis.rootCause}</div>
+                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Structural Root Cause</div>
+                                            <div style={{ fontWeight: '600', color: 'var(--danger)' }}>{analysis.structuralRootCause || analysis.rootCause}</div>
                                         </div>
                                         <div>
                                             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Identified Vulnerability</div>

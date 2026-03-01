@@ -40,7 +40,9 @@ const startServer = async () => {
     await connectDB();
 
     // 2. Seed Admin
-    await seedAdmin();
+    if (process.env.NODE_ENV !== "production") {
+        await seedAdmin();
+    }
 
     // 3. Initialize Socket.io (with Redis Adapter)
     initSocket(server);

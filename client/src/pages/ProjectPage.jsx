@@ -85,7 +85,7 @@ const ProjectPage = () => {
         fetchData();
 
         // Socket Implementation
-        socketRef.current = io("http://localhost:5000");
+        socketRef.current = io(import.meta.env.VITE_BACKEND_URL);
 
         socketRef.current.on("connect", () => {
             console.log("Connected to simulation server");
@@ -116,6 +116,38 @@ const ProjectPage = () => {
         };
 
         socketRef.current.on("simulation:stopped", handleSimulationStopped);
+
+        socketRef.current.on("simulation_state_sync", (data) => {
+            if (!data) return;
+            if (isReplayMode) return;
+
+            if (data.isRunning) {
+                setSimStatus(prev => ({ ...prev, isRunning: data.isRunning }));
+                setSimulationMode(data.mode);
+                setAnalytics(prev => ({
+                    ...prev,
+                    failedNodeIds: data.failedNodeIds,
+                    cascadeDepth: data.cascadeDepth,
+                    mode: data.mode,
+                    injectedNodeId: data.injectedNodeId
+                }));
+
+                setGraph(prev => ({
+                    ...prev,
+                    nodes: prev.nodes.map(node => {
+                        const nodeUpdate = data.nodesState[node._id];
+                        if (nodeUpdate) {
+                            return {
+                                ...node,
+                                resourceValue: nodeUpdate.resourceValue,
+                                failed: nodeUpdate.failed
+                            };
+                        }
+                        return node;
+                    })
+                }));
+            }
+        });
 
         socketRef.current.on("simulation_update", (data) => {
             // Ignore live updates in replay mode
@@ -452,7 +484,9 @@ const ProjectPage = () => {
             const res = await api.post("/ai/analyze-simulation", {
                 projectId,
                 failedNodeIds,
-                cascadeDepth: depth
+                cascadeDepth: depth,
+                mode: analytics?.mode || "deterministic",
+                injectedNodeId: analytics?.mode === "chaos" ? analytics?.initialFailureNode?.id : null
             });
             setAiAnalysis(res.data);
             notify.success("Forensics: Cascade analysis generated.");
@@ -622,8 +656,14 @@ const ProjectPage = () => {
                 }}>
                     <div className="main-simulation-area">
                         {/* Analytics Panel */}
-                        {(simStatus.isRunning || isReplayMode) && analytics && (
-                            <div className="card analytics-panel" style={{ marginBottom: '2rem', borderTop: `4px solid ${getHealthColor(analytics.systemHealthScore)}` }}>
+                        {(simStatus.isRunning || isReplayMode) && (
+                            <div
+                                className="card analytics-panel"
+                                style={{
+                                    marginBottom: '2rem',
+                                    borderTop: `4px solid ${getHealthColor(analytics?.systemHealthScore ?? 100)}`
+                                }}
+                            >
                                 {analytics?.mode === 'chaos' && analytics?.initialFailureNode && (
                                     <div
                                         style={{
@@ -634,56 +674,103 @@ const ProjectPage = () => {
                                             borderRadius: '6px'
                                         }}
                                     >
-                                        <strong>⚡ Chaos Injection:</strong>{' '}
+                                        <strong>⚡ Chaos Injection:</strong>{" "}
                                         {analytics.initialFailureNode.name} triggered initial failure.
                                     </div>
                                 )}
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem' }}>
+
+                                <div style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                                    gap: '1.5rem'
+                                }}>
+
+                                    {/* System Health */}
                                     <div className="analytics-stat">
                                         <label>System Health</label>
-                                        <div className="stat-value" style={{ color: getHealthColor(analytics.systemHealthScore), fontSize: '2.5rem', fontWeight: 'bold' }}>
-                                            {analytics.systemHealthScore.toFixed(1)}%
+                                        <div
+                                            className="stat-value"
+                                            style={{
+                                                color: getHealthColor(analytics?.systemHealthScore ?? 100),
+                                                fontSize: '2.5rem',
+                                                fontWeight: 'bold'
+                                            }}
+                                        >
+                                            {(analytics?.systemHealthScore ?? 100).toFixed(1)}%
                                         </div>
                                         <div className="progress-bar-bg">
-                                            <div className="progress-bar-fill" style={{ width: `${analytics.systemHealthScore}%`, backgroundColor: getHealthColor(analytics.systemHealthScore) }}></div>
+                                            <div
+                                                className="progress-bar-fill"
+                                                style={{
+                                                    width: `${analytics?.systemHealthScore ?? 100}%`,
+                                                    backgroundColor: getHealthColor(analytics?.systemHealthScore ?? 100)
+                                                }}
+                                            />
                                         </div>
                                     </div>
+
+                                    {/* Failed Nodes */}
                                     <div className="analytics-stat">
                                         <label>Failed Nodes</label>
-                                        <div className="stat-value" style={{ fontSize: '2.5rem', fontWeight: 'bold' }}>
-                                            {analytics.failedPercentage.toFixed(1)}%
+                                        <div
+                                            className="stat-value"
+                                            style={{ fontSize: '2.5rem', fontWeight: 'bold' }}
+                                        >
+                                            {(analytics?.failedPercentage ?? 0).toFixed(1)}%
                                         </div>
                                         <div className="progress-bar-bg">
-                                            <div className="progress-bar-fill" style={{ width: `${analytics.failedPercentage}%`, backgroundColor: '#ef4444' }}></div>
+                                            <div
+                                                className="progress-bar-fill"
+                                                style={{
+                                                    width: `${analytics?.failedPercentage ?? 0}%`,
+                                                    backgroundColor: '#ef4444'
+                                                }}
+                                            />
                                         </div>
                                     </div>
+
+                                    {/* Cascade Depth */}
                                     <div className="analytics-stat">
-                                        <label style={{ display: 'flex', alignItems: 'center' }}>
-                                            Cascade Depth
-                                            <span className="tooltip-trigger">?
-                                                <span className="tooltip">
-                                                    Cascade depth represents the maximum number of propagation layers triggered from an initial node failure.
-                                                </span>
-                                            </span>
-                                        </label>
-                                        <div className="stat-value" style={{ fontSize: '2.5rem', fontWeight: 'bold' }}>
-                                            {analytics.cascadeDepth}
+                                        <label>Cascade Depth</label>
+                                        <div
+                                            className="stat-value"
+                                            style={{ fontSize: '2.5rem', fontWeight: 'bold' }}
+                                        >
+                                            {analytics?.cascadeDepth ?? 0}
                                         </div>
                                         <p className="subtitle">Max Propagation Depth</p>
                                     </div>
+
+                                    {/* Most Impacted */}
                                     <div className="analytics-stat">
                                         <label>Most Impacted</label>
-                                        {analytics.mostImpactedNode ? (
+                                        {analytics?.mostImpactedNode ? (
                                             <>
-                                                <div className="stat-value" style={{ fontSize: '1.2rem', fontWeight: 'bold', marginTop: '0.5rem' }}>
+                                                <div
+                                                    className="stat-value"
+                                                    style={{
+                                                        fontSize: '1.2rem',
+                                                        fontWeight: 'bold',
+                                                        marginTop: '0.5rem'
+                                                    }}
+                                                >
                                                     {analytics.mostImpactedNode.name}
                                                 </div>
-                                                <p className="subtitle">Impact: {analytics.mostImpactedNode.impactValue.toFixed(0)} units</p>
+                                                <p className="subtitle">
+                                                    Impact:{" "}
+                                                    {(analytics.mostImpactedNode?.impactValue ?? 0).toFixed(0)} units
+                                                </p>
                                             </>
                                         ) : (
-                                            <div className="stat-value" style={{ fontSize: '1.2rem', color: '#6b7280' }}>N/A</div>
+                                            <div
+                                                className="stat-value"
+                                                style={{ fontSize: '1.2rem', color: '#6b7280' }}
+                                            >
+                                                N/A
+                                            </div>
                                         )}
                                     </div>
+
                                 </div>
                             </div>
                         )}

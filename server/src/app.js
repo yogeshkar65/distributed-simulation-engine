@@ -17,23 +17,30 @@ app.use(express.json());
 // CORS
 const allowedOrigins =
     process.env.NODE_ENV === "production"
-        ? [process.env.FRONTEND_URL]
+        ? [process.env.CLIENT_URL]
         : ["http://localhost:5173"];
 
 app.use(
     cors({
-        origin: function (origin, callback) {
-            // Allow requests with no origin (like mobile apps or curl requests)
-            if (!origin || allowedOrigins.includes(origin)) {
-                callback(null, true);
-            } else {
-                callback(new Error("Not allowed by CORS"));
+        origin: (origin, callback) => {
+            // Allow requests without origin (Postman, curl)
+            if (!origin) return callback(null, true);
+
+            // In development allow localhost freely
+            if (process.env.NODE_ENV !== "production") {
+                return callback(null, true);
             }
+
+            // In production strictly allow only CLIENT_URL
+            if (allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+
+            return callback(new Error("Not allowed by CORS"));
         },
         credentials: true,
     })
 );
-
 
 // Routes
 app.use("/api/auth", authRoutes);

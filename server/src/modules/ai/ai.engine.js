@@ -110,28 +110,82 @@ const predictRisk = (nodes, edges) => {
 /**
  * Post-simulation forensics.
  */
-const analyzeSimulation = (nodes, edges, failedNodeIds, cascadeDepth) => {
-    const failedNodesInfo = nodes.filter(n => failedNodeIds.includes(n._id.toString()));
+const analyzeSimulation = (
+    nodes,
+    edges,
+    failedNodeIds,
+    cascadeDepth,
+    mode = "deterministic",
+    injectedNodeId = null
+) => {
+    const failedNodesInfo = nodes.filter(n =>
+        failedNodeIds.includes(n._id.toString())
+    );
 
-    // Heuristic: The first failed node is likely the root cause if only one was primary
-    const rootCause = failedNodesInfo[0]?.name || "Unknown";
+    // ----------------------------
+    // 1️⃣ Injection Origin
+    // ----------------------------
+    let injectionOrigin = "Unknown";
 
-    const structuralWeakness = cascadeDepth > 2
-        ? "High cross-dependency prevents isolation of faults."
-        : "System correctly isolated the failure to local clusters.";
+    if (mode === "chaos" && injectedNodeId) {
+        const injectedNode = nodes.find(
+            n => n._id.toString() === injectedNodeId.toString()
+        );
+        injectionOrigin = injectedNode?.name || "Unknown";
+    }
+
+    // ----------------------------
+    // 2️⃣ Structural Root Cause
+    // Root = failed node with no incoming edges from other failed nodes
+    // ----------------------------
+    const failedSet = new Set(failedNodeIds.map(id => id.toString()));
+
+    let structuralRoot = "Unknown";
+
+    for (const node of failedNodesInfo) {
+        const incomingFromFailed = edges.some(
+            e =>
+                e.targetNodeId.toString() === node._id.toString() &&
+                failedSet.has(e.sourceNodeId.toString())
+        );
+
+        if (!incomingFromFailed) {
+            structuralRoot = node.name;
+            break;
+        }
+    }
+
+    // ----------------------------
+    // Structural Weakness
+    // ----------------------------
+    const structuralWeakness =
+        cascadeDepth > 2
+            ? "High cross-dependency prevents isolation of faults."
+            : "System correctly isolated the failure to local clusters.";
 
     const recommendations = [];
-    if (cascadeDepth > 3) recommendations.push("Introduce circuit breakers in primary dependency chains.");
-    if (failedNodesInfo.length > nodes.length / 2) recommendations.push("Increase failure thresholds on critical hub nodes.");
+
+    if (cascadeDepth > 3)
+        recommendations.push(
+            "Introduce circuit breakers in primary dependency chains."
+        );
+
+    if (failedNodesInfo.length > nodes.length / 2)
+        recommendations.push(
+            "Increase failure thresholds on critical hub nodes."
+        );
 
     const bottlenecks = detectBottlenecks(nodes, edges);
     bottlenecks.forEach(b => {
-        recommendations.push(`Add redundancy for ${b.name} to distribute convergence load.`);
+        recommendations.push(
+            `Add redundancy for ${b.name} to distribute convergence load.`
+        );
     });
 
     return {
         summary: `Cascade reached depth ${cascadeDepth} affecting ${failedNodeIds.length} nodes.`,
-        rootCause,
+        injectionOrigin: mode === "chaos" ? injectionOrigin : null,
+        structuralRootCause: structuralRoot,
         cascadeDepth,
         structuralWeakness,
         riskLevel: cascadeDepth > 2 ? "HIGH" : "MEDIUM",

@@ -5,21 +5,20 @@ const { getRedis } = require("../../config/redis");
 const { getIO } = require("../../config/socket");
 const { getSimulationQueue } = require("../../queues/simulation.queue");
 
-/**
- * Build initial graph state and store in Redis
- */
+/* ======================================================
+   START SIMULATION
+====================================================== */
+
 const startSimulation = async (projectId, mode = "deterministic") => {
     const redis = getRedis();
     const lockKey = `lock:simulation:${projectId}`;
     const stateKey = `simulation:${projectId}`;
 
-    // 1. Acquire Distributed Lock (NX = Only if not exists, EX 5 = Expires in 5s)
     const acquired = await redis.set(lockKey, "true", "NX", "EX", 10);
     if (!acquired) {
-        throw new Error("Simulation already running on another instance");
+        throw new Error("Simulation already running");
     }
 
-    // 2. Fetch data from DB
     const nodes = await Node.find({ projectId });
     const edges = await Edge.find({ projectId });
 
@@ -27,201 +26,155 @@ const startSimulation = async (projectId, mode = "deterministic") => {
     const adjacencyList = {};
 
     nodes.forEach(node => {
-        nodesState[node._id.toString()] = {
+        const id = node._id.toString();
+        nodesState[id] = {
             name: node.name,
             resourceValue: node.resourceValue,
             maxCapacity: node.maxCapacity,
             failureThreshold: node.failureThreshold,
             failed: false
         };
-        adjacencyList[node._id.toString()] = [];
+        adjacencyList[id] = [];
     });
 
     edges.forEach(edge => {
         const source = edge.sourceNodeId.toString();
-        if (adjacencyList[source]) {
-            adjacencyList[source].push({
-                targetId: edge.targetNodeId.toString(),
-                weight: edge.weight
-            });
-        }
+        adjacencyList[source]?.push({
+            targetId: edge.targetNodeId.toString(),
+            weight: edge.weight
+        });
     });
 
-    // 3. Initialize Shared State in Redis
-    const initialState = {
+    const simulation = {
         projectId,
+        tickCount: 0,
+        version: 0,
+        isRunning: true,
+        mode,
         nodesState,
         adjacencyList,
         newlyFailed: [],
-        tickCount: 0,
-        isRunning: true,
-        version: 0, // 🔒 Distributed atomic version control
         analytics: {
             failedPercentage: 0,
             cascadeDepth: 0,
-            mostImpactedNode: null,
             systemHealthScore: 100,
+            mostImpactedNode: null,
             failedNodeIds: [],
-            mode: mode,
+            mode,
             initialFailureNode: null
         }
     };
 
+    /* ---------- CHAOS MODE ---------- */
     if (mode === "chaos") {
         const candidates = nodes.filter(
-            node => node.resourceValue > node.failureThreshold
+            n => n.resourceValue > n.failureThreshold
         );
 
         if (candidates.length > 0) {
-            const randomIndex = Math.floor(Math.random() * candidates.length);
-            const selectedNode = candidates[randomIndex];
-            const selectedId = selectedNode._id.toString();
+            const selected = candidates[Math.floor(Math.random() * candidates.length)];
+            const selectedId = selected._id.toString();
 
-            // 🔥 Inject failure ONLY in Redis state
-            initialState.nodesState[selectedId].resourceValue = 0;
-            initialState.nodesState[selectedId].failed = true;
-            initialState.newlyFailed.push(selectedId);
-            initialState.analytics.mode = "chaos";
-            initialState.analytics.initialFailureNode = { id: selectedId, name: selectedNode.name };
+            simulation.nodesState[selectedId].resourceValue = 0;
+            simulation.nodesState[selectedId].failed = true;
+            simulation.newlyFailed.push(selectedId);
 
-            const io = getIO();
-            io.to(`project_${projectId}`).emit("simulation_update", {
-                tickCount: 0,
-                nodesState: initialState.nodesState,
-                analytics: initialState.analytics
-            });
+            simulation.analytics.initialFailureNode = {
+                id: selectedId,
+                name: selected.name
+            };
         }
     }
 
-    await redis.set(stateKey, JSON.stringify(initialState));
+    calculateAnalytics(simulation);
 
-    // 4. Enqueue first tick job
+    await redis.set(stateKey, JSON.stringify(simulation));
+
     const queue = getSimulationQueue();
     await queue.add(`tick_${projectId}`, { projectId }, { jobId: `tick_${projectId}` });
 
-    return initialState;
+    return simulation;
 };
 
-/**
- * Process a single simulation tick (called by BullMQ worker)
- * Hardened for distributed safety (locks, atomicity, idempotency)
- */
+/* ======================================================
+   PROCESS TICK
+====================================================== */
+
 const processSimulationTick = async (projectId) => {
     const redis = getRedis();
     const stateKey = `simulation:${projectId}`;
     const lockKey = `lock:simulation:${projectId}`;
 
-    // 1. Validate Lock Presence (Heartbeat)
-    // If lock is gone, the simulation was either stopped or another instance might take over
     const isLocked = await redis.get(lockKey);
-    if (!isLocked) {
-        console.log(`[Engine] Aborting tick for ${projectId}: Lock not held.`);
-        return;
-    }
+    if (!isLocked) return;
 
-    // Refresh lock expiry (Keep-alive)
     await redis.expire(lockKey, 15);
 
-    // 2. Fetch State
     const data = await redis.get(stateKey);
     if (!data) return;
 
     const simulation = JSON.parse(data);
     if (!simulation.isRunning) return;
 
-    // 3. Run Logic
     evaluateFailures(simulation);
-    propagateFailures(simulation);
+    const cascadeOccurred = propagateFailures(simulation);
     calculateAnalytics(simulation);
 
-    // 4. 🔒 Distributed Optimistic Atomic Update
-    let updated = false;
-
-    while (!updated) {
-        await redis.watch(stateKey);
-
-        const currentData = await redis.get(stateKey);
-        if (!currentData) {
-            await redis.unwatch();
-            return;
-        }
-
-        const currentState = JSON.parse(currentData);
-
-        // If simulation was stopped
-        if (!currentState.isRunning) {
-            await redis.unwatch();
-            return;
-        }
-
-        // If version mismatch → another worker already processed this tick
-        if (currentState.version !== simulation.version) {
-            await redis.unwatch();
-            return;
-        }
-
-        // 🔒 Derive atomic next state from latest Redis state
-        simulation.tickCount = currentState.tickCount + 1;
-        simulation.version = currentState.version + 1;
-
-        const multi = redis.multi();
-        multi.set(stateKey, JSON.stringify(simulation));
-
-        const execResult = await multi.exec();
-
-        if (execResult !== null) {
-            updated = true;
-        }
+    /* -------- STOP CONDITION -------- */
+    if (!cascadeOccurred) {
+        simulation.isRunning = false;
     }
 
-    // Persist Snapshot (Non-blocking)
-    const snapshotTick = simulation.tickCount;
-    const snapshotProjectId = simulation.projectId.toString();
-    const snapshotNodes = JSON.parse(JSON.stringify(simulation.nodesState));
-    const snapshotAnalytics = JSON.parse(JSON.stringify(simulation.analytics));
+    simulation.tickCount += 1;
+    simulation.version += 1;
 
-    setImmediate(async () => {
-        try {
-            await SimulationHistory.create({
-                projectId: snapshotProjectId,
-                tick: snapshotTick,
-                mode: simulation.analytics?.mode || "deterministic",
-                nodesState: snapshotNodes,
-                analytics: snapshotAnalytics
-            });
-        } catch (err) {
-            console.error("Snapshot save failed:", err.message);
-        }
+    await redis.set(stateKey, JSON.stringify(simulation));
+
+    const io = getIO();
+    io.to(`project_${projectId}`).emit("simulation_update", {
+        tickCount: simulation.tickCount,
+        nodesState: simulation.nodesState,
+        analytics: simulation.analytics,
+        isRunning: simulation.isRunning
     });
 
-    // 6. Emit live update
-    const io = getIO();
-    io.to(`project_${snapshotProjectId}`).emit("simulation_update", {
-        tickCount: simulation.tickCount,
+    /* -------- SAVE SNAPSHOT -------- */
+    await SimulationHistory.create({
+        projectId,
+        tick: simulation.tickCount,
+        mode: simulation.mode,
         nodesState: simulation.nodesState,
         analytics: simulation.analytics
     });
 
-    // 7. Schedule next tick (Idempotent jobId ensures only one 'next' job exists)
-    const queue = getSimulationQueue();
-    await queue.add(`tick_${projectId}`, { projectId }, {
-        jobId: `tick_${projectId}`, // Same ID prevents duplicate overlapping ticks
-        delay: 1000
-    });
+    /* -------- NEXT TICK -------- */
+    if (simulation.isRunning) {
+        const queue = getSimulationQueue();
+        await queue.add(
+            `tick_${projectId}`,
+            { projectId },
+            { jobId: `tick_${projectId}`, delay: 1000 }
+        );
+    }
 };
+
+/* ======================================================
+   STOP SIMULATION
+====================================================== */
 
 const stopSimulation = async (projectId) => {
     const redis = getRedis();
-    const stateKey = `simulation:${projectId}`;
-    const lockKey = `lock:simulation:${projectId}`;
-
-    await redis.del(stateKey);
-    await redis.del(lockKey);
+    await redis.del(`simulation:${projectId}`);
+    await redis.del(`lock:simulation:${projectId}`);
 
     const queue = getSimulationQueue();
     const job = await queue.getJob(`tick_${projectId}`);
     if (job) await job.remove();
 };
+
+/* ======================================================
+   STATUS
+====================================================== */
 
 const getSimulationStatus = async (projectId) => {
     const redis = getRedis();
@@ -229,79 +182,95 @@ const getSimulationStatus = async (projectId) => {
     if (!data) return { isRunning: false, tickCount: 0 };
 
     const sim = JSON.parse(data);
-    return { isRunning: sim.isRunning, tickCount: sim.tickCount };
+    return {
+        isRunning: sim.isRunning,
+        tickCount: sim.tickCount
+    };
 };
 
-// Helper logic functions (internal to worker)
+/* ======================================================
+   INTERNAL LOGIC
+====================================================== */
+
 const evaluateFailures = (simulation) => {
-    Object.keys(simulation.nodesState).forEach(nodeId => {
-        const node = simulation.nodesState[nodeId];
-        if (node.resourceValue <= node.failureThreshold && !node.failed) {
+    Object.entries(simulation.nodesState).forEach(([id, node]) => {
+        if (!node.failed && node.resourceValue <= node.failureThreshold) {
             node.failed = true;
-            simulation.newlyFailed.push(nodeId);
+            simulation.newlyFailed.push(id);
         }
     });
 };
 
 const propagateFailures = (simulation) => {
-    if (simulation.newlyFailed.length === 0) return;
+    if (simulation.newlyFailed.length === 0) return false;
 
-    const queue = simulation.newlyFailed.map(id => ({ id, depth: 0 }));
-    const visited = new Set([...simulation.newlyFailed]);
-    let maxDepth = 0;
-
+    const queue = [...simulation.newlyFailed];
     simulation.newlyFailed = [];
 
-    while (queue.length > 0) {
-        const { id: uId, depth } = queue.shift();
-        maxDepth = Math.max(maxDepth, depth);
+    let cascadeOccurred = false;
 
+    while (queue.length > 0) {
+        const uId = queue.shift();
         const neighbors = simulation.adjacencyList[uId] || [];
+
         neighbors.forEach(neighbor => {
             const vId = neighbor.targetId;
-            const neighborNode = simulation.nodesState[vId];
+            const node = simulation.nodesState[vId];
 
-            if (neighborNode && !neighborNode.failed) {
-                neighborNode.resourceValue -= neighbor.weight;
-                if (neighborNode.resourceValue <= neighborNode.failureThreshold) {
-                    neighborNode.failed = true;
-                    if (!visited.has(vId)) {
-                        visited.add(vId);
-                        queue.push({ id: vId, depth: depth + 1 });
-                    }
+            if (node && !node.failed) {
+                node.resourceValue -= neighbor.weight;
+
+                if (node.resourceValue <= node.failureThreshold) {
+                    node.failed = true;
+                    queue.push(vId);
+                    cascadeOccurred = true;
                 }
             }
         });
     }
 
-    simulation.analytics.cascadeDepth = Math.max(simulation.analytics.cascadeDepth, maxDepth);
+    if (cascadeOccurred) {
+        simulation.analytics.cascadeDepth += 1;
+    }
+
+    return cascadeOccurred;
 };
 
 const calculateAnalytics = (simulation) => {
-    const totalNodes = Object.keys(simulation.nodesState).length;
-    const nodesArray = Object.entries(simulation.nodesState);
-    const failedNodesCount = nodesArray.filter(([_, n]) => n.failed).length;
+    const nodes = Object.entries(simulation.nodesState);
+    const total = nodes.length;
+    const failed = nodes.filter(([_, n]) => n.failed).length;
 
-    simulation.analytics.failedPercentage = totalNodes === 0 ? 0 : (failedNodesCount / totalNodes) * 100;
-    simulation.analytics.systemHealthScore = Math.max(0, 100 - simulation.analytics.failedPercentage);
-    simulation.analytics.failedNodeIds = nodesArray.filter(([_, n]) => n.failed).map(([id, _]) => id);
+    simulation.analytics.failedPercentage =
+        total === 0 ? 0 : (failed / total) * 100;
 
-    let mostImpacted = null;
+    simulation.analytics.systemHealthScore =
+        Math.max(0, 100 - simulation.analytics.failedPercentage);
+
+    simulation.analytics.failedNodeIds =
+        nodes.filter(([_, n]) => n.failed).map(([id]) => id);
+
     let maxImpact = -Infinity;
+    let impacted = null;
 
-    nodesArray.forEach(([id, node]) => {
-        const impact = (node.maxCapacity || 100) - node.resourceValue;
+    nodes.forEach(([id, node]) => {
+        const impact = node.maxCapacity - node.resourceValue;
         if (impact > maxImpact) {
             maxImpact = impact;
-            mostImpacted = { nodeId: id, name: node.name, impactValue: impact };
+            impacted = {
+                nodeId: id,
+                name: node.name,
+                impactValue: impact
+            };
         }
     });
-    simulation.analytics.mostImpactedNode = mostImpacted;
+
+    simulation.analytics.mostImpactedNode = impacted;
 };
 
 module.exports = {
     startSimulation,
+    processSimulationTick,
     stopSimulation,
-    getSimulationStatus,
-    processSimulationTick
+    getSimulationStatus
 };

@@ -33,7 +33,13 @@ const predictRisk = async (req, res, next) => {
 // @route   POST /api/ai/analyze-simulation
 const analyzeSimulation = async (req, res, next) => {
     try {
-        const { projectId, failedNodeIds, cascadeDepth } = req.body;
+        const {
+            projectId,
+            failedNodeIds,
+            cascadeDepth,
+            mode,
+            injectedNodeId
+        } = req.body;
 
         const project = await Project.findById(projectId);
         if (!project) {
@@ -47,7 +53,14 @@ const analyzeSimulation = async (req, res, next) => {
         const nodes = await Node.find({ projectId });
         const edges = await Edge.find({ projectId });
 
-        const results = aiEngine.analyzeSimulation(nodes, edges, failedNodeIds, cascadeDepth);
+        const results = aiEngine.analyzeSimulation(
+            nodes,
+            edges,
+            failedNodeIds,
+            cascadeDepth,
+            mode,
+            injectedNodeId
+        );
         res.json(results);
     } catch (error) {
         next(error);

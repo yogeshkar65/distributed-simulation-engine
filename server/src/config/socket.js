@@ -10,22 +10,28 @@ const initSocket = (server) => {
         return io;
     }
 
-    const allowedOrigins =
-        process.env.NODE_ENV === "production"
-            ? [process.env.FRONTEND_URL]
-            : ["http://localhost:5173"];
-
     io = new Server(server, {
         cors: {
-            origin: function (origin, callback) {
-                if (!origin || allowedOrigins.includes(origin)) {
-                    callback(null, true);
-                } else {
-                    callback(new Error("Not allowed by CORS"));
+            origin: (origin, callback) => {
+                if (!origin) return callback(null, true);
+
+                // Development: allow any localhost port
+                if (
+                    process.env.NODE_ENV !== "production" &&
+                    origin.startsWith("http://localhost")
+                ) {
+                    return callback(null, true);
                 }
+
+                // Production: allow only frontend URL
+                if (origin === process.env.CLIENT_URL) {
+                    return callback(null, true);
+                }
+
+                return callback(new Error("Socket.IO CORS not allowed"), false);
             },
-            credentials: true
-        }
+            credentials: true,
+        },
     });
 
     // Setup Redis Adapter for multi-instance scaling
@@ -42,10 +48,31 @@ const initSocket = (server) => {
             }
         });
 
-        socket.on("joinProjectRoom", (projectId) => {
+        socket.on("joinProjectRoom", async (projectId) => {
             if (projectId) {
                 socket.join(`project_${projectId}`);
                 console.log(`Socket ${socket.id} joined room project_${projectId} via joinProjectRoom`);
+
+                try {
+                    const redis = getRedis();
+                    const key = `simulation:${projectId}`;
+                    const data = await redis.get(key);
+
+                    if (data) {
+                        const state = JSON.parse(data);
+
+                        socket.emit("simulation_state_sync", {
+                            nodesState: state.nodesState || {},
+                            failedNodeIds: state.failedNodeIds || state.analytics?.failedNodeIds || [],
+                            cascadeDepth: state.cascadeDepth || state.analytics?.cascadeDepth || 0,
+                            isRunning: state.isRunning || false,
+                            mode: state.mode || state.analytics?.mode || "deterministic",
+                            injectedNodeId: state.injectedNodeId || null
+                        });
+                    }
+                } catch (err) {
+                    console.error("Simulation state sync error:", err.message);
+                }
             }
         });
 
