@@ -36,3 +36,4 @@ services:
 
 volumes:
   mongo_data:
+"# Ensure correct restart policies"  
