@@ -136,7 +136,13 @@ const createEdge = async (req, res, next) => {
         // Check if edge already exists
         const existingEdge = await Edge.findOne({ projectId, sourceNodeId, targetNodeId });
         if (existingEdge) {
-            return res.status(400).json({ message: "Edge already exists" });
+            existingEdge.weight = weight;
+            await existingEdge.save();
+
+            return res.status(200).json({
+                ...existingEdge.toObject(),
+                updated: true
+            });
         }
 
         const edge = await Edge.create({
@@ -148,6 +154,9 @@ const createEdge = async (req, res, next) => {
 
         res.status(201).json(edge);
     } catch (error) {
+        if (error.code === 11000) {
+            return res.status(400).json({ message: "Edge already exists." });
+        }
         next(error);
     }
 };
