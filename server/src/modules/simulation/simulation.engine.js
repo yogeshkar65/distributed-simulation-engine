@@ -8,7 +8,7 @@ const { getSimulationQueue } = require("../../queues/simulation.queue");
 /**
  * Build initial graph state and store in Redis
  */
-const startSimulation = async (projectId) => {
+const startSimulation = async (projectId, mode = "deterministic") => {
     const redis = getRedis();
     const lockKey = `lock:simulation:${projectId}`;
     const stateKey = `simulation:${projectId}`;
@@ -61,9 +61,37 @@ const startSimulation = async (projectId) => {
             cascadeDepth: 0,
             mostImpactedNode: null,
             systemHealthScore: 100,
-            failedNodeIds: []
+            failedNodeIds: [],
+            mode: mode,
+            initialFailureNode: null
         }
     };
+
+    if (mode === "chaos") {
+        const candidates = nodes.filter(
+            node => node.resourceValue > node.failureThreshold
+        );
+
+        if (candidates.length > 0) {
+            const randomIndex = Math.floor(Math.random() * candidates.length);
+            const selectedNode = candidates[randomIndex];
+            const selectedId = selectedNode._id.toString();
+
+            // 🔥 Inject failure ONLY in Redis state
+            initialState.nodesState[selectedId].resourceValue = 0;
+            initialState.nodesState[selectedId].failed = true;
+            initialState.newlyFailed.push(selectedId);
+            initialState.analytics.mode = "chaos";
+            initialState.analytics.initialFailureNode = { id: selectedId, name: selectedNode.name };
+
+            const io = getIO();
+            io.to(`project_${projectId}`).emit("simulation_update", {
+                tickCount: 0,
+                nodesState: initialState.nodesState,
+                analytics: initialState.analytics
+            });
+        }
+    }
 
     await redis.set(stateKey, JSON.stringify(initialState));
 
@@ -157,6 +185,7 @@ const processSimulationTick = async (projectId) => {
             await SimulationHistory.create({
                 projectId: snapshotProjectId,
                 tick: snapshotTick,
+                mode: simulation.analytics?.mode || "deterministic",
                 nodesState: snapshotNodes,
                 analytics: snapshotAnalytics
             });
