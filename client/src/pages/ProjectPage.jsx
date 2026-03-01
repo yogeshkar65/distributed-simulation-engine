@@ -22,6 +22,7 @@ const ProjectPage = () => {
     const [analytics, setAnalytics] = useState(null);
     const [aiAnalysis, setAiAnalysis] = useState(null);
     const [aiLoading, setAiLoading] = useState(false);
+    const [simulationMode, setSimulationMode] = useState('deterministic');
 
     // Replay state
     const [history, setHistory] = useState([]);
@@ -152,7 +153,9 @@ const ProjectPage = () => {
     const handleStartSimulation = async () => {
         try {
             setError("");
-            await api.post(`/simulation/start/${projectId}`);
+            await api.post(`/simulation/start/${projectId}`, {
+                mode: simulationMode
+            });
             setSimStatus(prev => ({ ...prev, isRunning: true }));
             setIsReplayMode(false);
         } catch (err) {
@@ -168,6 +171,7 @@ const ProjectPage = () => {
 
             if (response.data.success) {
                 setSimStatus({ isRunning: false, tickCount: 0 });
+                setSimulationMode('deterministic');
                 notify.success("Simulation stopped successfully.");
 
                 // If we have failures, trigger AI analysis automatically
@@ -315,17 +319,32 @@ const ProjectPage = () => {
                 ...edgeData,
                 projectId
             });
-            setGraph(prev => ({
-                ...prev,
-                edges: [...prev.edges, res.data]
-            }));
+
+            // If backend updated existing edge
+            if (res.data.updated) {
+                setGraph(prev => ({
+                    ...prev,
+                    edges: prev.edges.map(edge =>
+                        edge._id === res.data._id ? res.data : edge
+                    )
+                }));
+
+                notify.success("Dependency weight updated.");
+            } else {
+                setGraph(prev => ({
+                    ...prev,
+                    edges: [...prev.edges, res.data]
+                }));
+
+                notify.success("Dependency established.");
+            }
+
             setEdgeData({
                 sourceNodeId: "",
                 targetNodeId: "",
                 weight: 1
             });
             setShowEdgeForm(false);
-            notify.success("Dependency established.");
         } catch (err) {
             notify.error(err.response?.data?.message || "Failed to create edge");
         } finally {
@@ -519,6 +538,30 @@ const ProjectPage = () => {
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                         {!isReplayMode ? (
                             <>
+                                {!simStatus.isRunning && (
+                                    <select
+                                        value={simulationMode}
+                                        onChange={(e) => setSimulationMode(e.target.value)}
+                                        className="btn btn-ghost"
+                                        style={{
+                                            minWidth: '190px',
+                                            borderColor: 'rgba(255,255,255,0.1)'
+                                        }}
+                                        title={
+                                            simulationMode === 'deterministic'
+                                                ? 'Runs simulation using existing resource states.'
+                                                : 'Injects one random initial failure before propagation begins.'
+                                        }
+                                    >
+                                        <option value="deterministic">
+                                            🔒 Deterministic Mode
+                                        </option>
+                                        <option value="chaos">
+                                            ⚡ Chaos Mode
+                                        </option>
+                                    </select>
+                                )}
+
                                 {!simStatus.isRunning ? (
                                     <button className="btn btn-primary" onClick={handleStartSimulation} style={{ backgroundColor: '#10b981' }}>
                                         ▶ Start Simulation
@@ -581,6 +624,20 @@ const ProjectPage = () => {
                         {/* Analytics Panel */}
                         {(simStatus.isRunning || isReplayMode) && analytics && (
                             <div className="card analytics-panel" style={{ marginBottom: '2rem', borderTop: `4px solid ${getHealthColor(analytics.systemHealthScore)}` }}>
+                                {analytics?.mode === 'chaos' && analytics?.initialFailureNode && (
+                                    <div
+                                        style={{
+                                            background: 'rgba(239, 68, 68, 0.08)',
+                                            borderLeft: '4px solid #ef4444',
+                                            padding: '0.75rem 1rem',
+                                            marginBottom: '1.5rem',
+                                            borderRadius: '6px'
+                                        }}
+                                    >
+                                        <strong>⚡ Chaos Injection:</strong>{' '}
+                                        {analytics.initialFailureNode.name} triggered initial failure.
+                                    </div>
+                                )}
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem' }}>
                                     <div className="analytics-stat">
                                         <label>System Health</label>
