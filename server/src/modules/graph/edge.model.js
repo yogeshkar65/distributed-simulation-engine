@@ -28,6 +28,9 @@ const edgeSchema = new mongoose.Schema({
 
 edgeSchema.index({ projectId: 1 });
 // Compund index to help prevent duplicate edges at DB level (optional but good)
-edgeSchema.index({ projectId: 1, sourceNodeId: 1, targetNodeId: 1 });
+edgeSchema.index(
+    { projectId: 1, sourceNodeId: 1, targetNodeId: 1 },
+    { unique: true }
+);
 
 module.exports = mongoose.model("Edge", edgeSchema);
