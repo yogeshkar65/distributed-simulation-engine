@@ -90,3 +90,4 @@ CascadeX is designed to operate in high-concurrency environments. By utilizing a
 ### Resume-Ready Summary
 
 CascadeX is a full-stack distributed simulation platform built to solve the challenge of complex dependency modeling. It leverages a modern event-driven architecture, implementing high-performance state synchronization via Redis and BullMQ to handle real-time propagation logic. This project demonstrates mastery of distributed systems, real-time data streaming, and professional-grade infrastructure engineering.
+"Deployment config"  
