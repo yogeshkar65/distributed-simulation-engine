@@ -1,36 +1,70 @@
 const Redis = require("ioredis");
 
-const connection = new Redis(process.env.REDIS_URL, {
-    maxRetriesPerRequest: null,
-    retryStrategy: (times) => Math.min(times * 50, 2000)
-});
+const redisOptions = {
+    tls: {}, // REQUIRED for Upstash
+    maxRetriesPerRequest: null, // REQUIRED for BullMQ
+    enableReadyCheck: false,
+    retryStrategy: (times) => {
+        return Math.min(times * 100, 3000);
+    }
+};
+
+// ----------------------
+// Main Redis Connection
+// ----------------------
+const connection = new Redis(process.env.REDIS_URL, redisOptions);
 
 connection.on("connect", () => {
-    if (process.env.NODE_ENV !== "production") {
-        console.log("✅ Redis connected (Upstash)");
-    }
+    console.log("✅ Redis connected (Upstash)");
 });
 
 connection.on("error", (err) => {
     console.error("❌ Redis error:", err.message);
 });
 
-// Helper for Pub/Sub if needed, although connection can be reused for basic Pub/Sub in some contexts,
-// BullMQ and Socket.IO adapter usually need their own clients or can share a connection depending on the library.
-// For BullMQ and general use, we'll export the main connection.
-const getRedis = () => connection;
+connection.on("close", () => {
+    console.warn("⚠️ Redis connection closed");
+});
 
-// Socket.IO adapter often needs separate pub/sub clients
-let pubClient = null;
-let subClient = null;
+connection.on("reconnecting", () => {
+    console.log("🔄 Redis reconnecting...");
+});
+
+// ----------------------
+// Pub/Sub Clients (Socket.IO Adapter)
+// ----------------------
+let pubClient;
+let subClient;
 
 const getPubSubClients = () => {
-    if (!pubClient) {
-        pubClient = new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
-        subClient = new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
+    if (!pubClient || !subClient) {
+        pubClient = new Redis(process.env.REDIS_URL, redisOptions);
+        subClient = new Redis(process.env.REDIS_URL, redisOptions);
+
+        pubClient.on("error", (err) =>
+            console.error("❌ Redis PubClient error:", err.message)
+        );
+
+        subClient.on("error", (err) =>
+            console.error("❌ Redis SubClient error:", err.message)
+        );
+
+        pubClient.on("reconnecting", () =>
+            console.log("🔄 PubClient reconnecting...")
+        );
+
+        subClient.on("reconnecting", () =>
+            console.log("🔄 SubClient reconnecting...")
+        );
     }
+
     return { pubClient, subClient };
 };
+
+// ----------------------
+// Getter
+// ----------------------
+const getRedis = () => connection;
 
 module.exports = {
     connection,

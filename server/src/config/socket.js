@@ -11,27 +11,27 @@ const initSocket = (server) => {
     }
 
     io = new Server(server, {
-        cors: {
-            origin: (origin, callback) => {
-                if (!origin) return callback(null, true);
+            cors: {
+                origin: (origin, callback) => {
+                    if (!origin) return callback(null, true);
 
-                // Development: allow any localhost port
-                if (
-                    process.env.NODE_ENV !== "production" &&
-                    origin.startsWith("http://localhost")
-                ) {
-                    return callback(null, true);
-                }
+                    // Development
+                    if (
+                        process.env.NODE_ENV !== "production" &&
+                        origin.startsWith("http://localhost")
+                    ) {
+                        return callback(null, true);
+                    }
 
-                // Production: allow only frontend URL
-                if (origin === process.env.CLIENT_URL) {
-                    return callback(null, true);
-                }
+                    // Production
+                    if (origin === process.env.FRONTEND_URL) {
+                        return callback(null, true);
+                    }
 
-                return callback(new Error("Socket.IO CORS not allowed"), false);
+                    return callback(new Error("Socket.IO CORS not allowed"), false);
+                },
+                credentials: true,
             },
-            credentials: true,
-        },
     });
 
     // Setup Redis Adapter for multi-instance scaling
